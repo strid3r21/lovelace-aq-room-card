@@ -70,6 +70,7 @@ class AqRoomCard extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._open = {};
     this._hist = {};
+    this._hours = 24 * 7; // 7-day graph window
   }
 
   setConfig(config) {
@@ -118,6 +119,29 @@ class AqRoomCard extends HTMLElement {
     this._hist[key] = { loading: true };
     const m = AQ_METRICS[key];
     const id = this.config.prefix + m.suffix;
+    const base = (this.config && this.config.history_url || "").replace(/\/+$/, "");
+    const finish = (points) => {
+      const step = Math.max(1, Math.ceil(points.length / 220));
+      this._hist[key] = { points: points.filter((_, i) => i % step === 0), loading: false };
+      this._render();
+    };
+    const fail = (err) => {
+      this._hist[key] = { error: String((err && err.message) || err), loading: false };
+      this._render();
+    };
+    // Primary: external history server (e.g. hassio-aq-history add-on)
+    if (base) {
+      fetch(`${base}/history?entity_id=${encodeURIComponent(id)}&hours=${this._hours}&max_points=500`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
+        .then((j) => {
+          const pts = (j && j.points) || [];
+          if (!Array.isArray(pts)) throw new Error("unexpected response");
+          finish(pts.map((p) => [p[0], parseFloat(p[1])]).filter((p) => isFinite(p[1])));
+        })
+        .catch(fail);
+      return;
+    }
+    // Fallback: HA websocket history API (not present in some builds)
     const since = new Date(Date.now() - 7 * 86400000).toISOString();
     const conn = this._hass && this._hass.connection;
     const run = () => {
@@ -157,22 +181,16 @@ class AqRoomCard extends HTMLElement {
           );
         }
         const states = (msg.result && msg.result[id]) || [];
-        let pts = states
+        const pts = states
           .map((st) => [
             (st.last_updated || st.last_changed) * 1000,
             parseFloat(st.state),
           ])
           .filter((p) => isFinite(p[0]) && isFinite(p[1]));
         pts.sort((a, b) => a[0] - b[0]);
-        const step = Math.max(1, Math.ceil(pts.length / 140));
-        const ds = pts.filter((_, i) => i % step === 0);
-        this._hist[key] = { points: ds, loading: false };
-        this._render();
+        finish(pts);
       })
-      .catch((err) => {
-        this._hist[key] = { error: String((err && err.message) || err), loading: false };
-        this._render();
-      });
+      .catch(fail);
   }
 
   _graph(key) {
