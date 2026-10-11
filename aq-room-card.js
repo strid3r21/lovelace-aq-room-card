@@ -40,6 +40,11 @@ const AQ_METRICS = {
 const ZONE_NAMES = ["Good", "Moderate", "Poor"];
 
 class AqRoomCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+  }
+
   setConfig(config) {
     if (!config.room) throw new Error("room is required");
     if (!config.prefix) throw new Error("prefix is required");
@@ -85,7 +90,7 @@ class AqRoomCard extends HTMLElement {
     const value = this._state(key);
     if (value === null) {
       return `<div class="row">
-        <ha-icon .icon="${m.icon}"></ha-icon>
+        <ha-icon icon="${m.icon}"></ha-icon>
         <span class="label">${m.label}</span>
         <span class="val muted">\u2014</span>
         <div class="track empty"></div>
@@ -95,7 +100,7 @@ class AqRoomCard extends HTMLElement {
     const pct = Math.max(0, Math.min(100, (value / m.max) * 100));
     const unit = m.unit ? ` <span class="unit">${m.unit}</span>` : "";
     return `<div class="row">
-      <ha-icon .icon="${m.icon}"></ha-icon>
+      <ha-icon icon="${m.icon}"></ha-icon>
       <span class="label">${m.label}</span>
       <span class="val" style="color:${m.zones[zi][1]}">${value.toFixed(m.decimals)}${unit}
         <span class="zone">${ZONE_NAMES[zi]}</span></span>
