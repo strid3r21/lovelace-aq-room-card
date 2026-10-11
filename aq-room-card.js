@@ -152,7 +152,7 @@ class AqRoomCard extends HTMLElement {
           const code = msg && msg.error && msg.error.code;
           throw new Error(
             code === "unknown_command"
-              ? "history integration is not set up on this instance"
+              ? "history is not available on this HA build (no history API)"
               : (msg && msg.error && msg.error.message) || "history fetch failed"
           );
         }
