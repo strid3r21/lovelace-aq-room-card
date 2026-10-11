@@ -47,7 +47,7 @@ const AQ_METRICS = {
   temperature: {
     label: "Temp", icon: "mdi:thermometer", unit: "°F", suffix: "temperature",
     max: 100,
-    zones: [[0, AQ_RED], [60, AQ_YELLOW], [65, AQ_GREEN], [78, AQ_YELLOW], [85, AQ_RED]],
+    zones: [[0, "#1e88e5"], [60, "#4dd0e1"], [65, AQ_GREEN], [78, "#ff9800"], [85, AQ_RED]],
     zone_labels: ["Cold", "Cool", "Good", "Warm", "Hot"],
     zone_severity: [2, 1, 0, 1, 2],
     decimals: 1,
@@ -55,7 +55,7 @@ const AQ_METRICS = {
   humidity: {
     label: "Humidity", icon: "mdi:water-percent", unit: "%", suffix: "humidity",
     max: 100,
-    zones: [[0, AQ_RED], [20, AQ_YELLOW], [30, AQ_GREEN], [60, AQ_YELLOW], [75, AQ_RED]],
+    zones: [[0, AQ_RED], [20, "#ff9800"], [30, AQ_GREEN], [60, "#4dd0e1"], [75, "#1e88e5"]],
     zone_labels: ["Very Dry", "Dry", "Good", "Humid", "Very Humid"],
     zone_severity: [2, 1, 0, 1, 2],
     decimals: 0,
@@ -119,21 +119,51 @@ class AqRoomCard extends HTMLElement {
     const m = AQ_METRICS[key];
     const id = this.config.prefix + m.suffix;
     const since = new Date(Date.now() - 7 * 86400000).toISOString();
-    const fetcher = this._hass && this._hass.fetchWithAuth;
-    if (typeof fetcher !== "function") {
-      this._hist[key] = { error: "history API unavailable in this HA version" };
-      this._render();
-      return;
-    }
-    fetcher
-      .call(this._hass, `/api/history?since=${encodeURIComponent(since)}&entity_id=${id}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
-      .then((data) => {
-        const entry = Array.isArray(data) ? data[0] : null;
-        let pts = (entry && entry.states) || [];
-        pts = pts
-          .filter((p) => isFinite(parseFloat(p[1])))
-          .map((p) => [p[0], parseFloat(p[1])]);
+    const conn = this._hass && this._hass.connection;
+    const run = () => {
+      const msgId = "aq" + Math.random().toString(16).slice(2);
+      const pending = new Promise((resolve) => {
+        const unsub = conn.subscribeMessage(
+          (msg) => {
+            if (msg.id === msgId) {
+              unsub();
+              resolve(msg);
+            }
+          },
+          {
+            id: msgId,
+            type: "history/history_during_period",
+            start_time: since,
+            entity_ids: [id],
+            no_attributes: true,
+            significant_changes_only: false,
+          }
+        );
+      });
+      return pending;
+    };
+    Promise.resolve()
+      .then(() => {
+        if (!conn) throw new Error("no websocket connection");
+        return run();
+      })
+      .then((msg) => {
+        if (!msg || !msg.success) {
+          const code = msg && msg.error && msg.error.code;
+          throw new Error(
+            code === "unknown_command"
+              ? "history integration is not set up on this instance"
+              : (msg && msg.error && msg.error.message) || "history fetch failed"
+          );
+        }
+        const states = (msg.result && msg.result[id]) || [];
+        let pts = states
+          .map((st) => [
+            (st.last_updated || st.last_changed) * 1000,
+            parseFloat(st.state),
+          ])
+          .filter((p) => isFinite(p[0]) && isFinite(p[1]));
+        pts.sort((a, b) => a[0] - b[0]);
         const step = Math.max(1, Math.ceil(pts.length / 140));
         const ds = pts.filter((_, i) => i % step === 0);
         this._hist[key] = { points: ds, loading: false };
