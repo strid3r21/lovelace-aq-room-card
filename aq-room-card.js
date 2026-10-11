@@ -1,6 +1,7 @@
 /* aq-room-card — Home Assistant custom card
  * Room air-quality overview: each metric shown as a horizontal bar with
  * colored good/moderate/bad zones and a marker at the current value.
+ * Rows expand on click to show a 7-day history line graph.
  *
  * Config:
  *   type: custom:aq-room-card
@@ -20,7 +21,7 @@ const AQ_METRICS = {
     max: 2000, zones: [[0, AQ_GREEN], [800, AQ_YELLOW], [1200, AQ_RED]], decimals: 0,
   },
   pm2_5: {
-    label: "PM2.5", icon: "mdi:carbon-monoxide", unit: "\u00b5g/m\u00b3", suffix: "pm2_5",
+    label: "PM2.5", icon: "mdi:smoke", unit: "\u00b5g/m\u00b3", suffix: "pm2_5",
     max: 50, zones: [[0, AQ_GREEN], [12, AQ_YELLOW], [35.4, AQ_RED]], decimals: 1,
   },
   pm1_0: {
@@ -43,6 +44,8 @@ class AqRoomCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    this._open = {};
+    this._hist = {};
   }
 
   setConfig(config) {
@@ -85,28 +88,96 @@ class AqRoomCard extends HTMLElement {
     return `linear-gradient(90deg, ${stops.join(", ")})`;
   }
 
-  _metricRow(key) {
+  _fetchHistory(key) {
+    const existing = this._hist[key];
+    if (existing && !existing.loading && !existing.error) return;
+    this._hist[key] = { loading: true };
+    const m = AQ_METRICS[key];
+    const id = this.config.prefix + m.suffix;
+    const since = new Date(Date.now() - 7 * 86400000).toISOString();
+    const fetcher = this._hass && this._hass.fetchWithAuth;
+    if (typeof fetcher !== "function") {
+      this._hist[key] = { error: "history API unavailable in this HA version" };
+      this._render();
+      return;
+    }
+    fetcher
+      .call(this._hass, `/api/history?since=${encodeURIComponent(since)}&entity_id=${id}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
+      .then((data) => {
+        const entry = Array.isArray(data) ? data[0] : null;
+        let pts = (entry && entry.states) || [];
+        pts = pts
+          .filter((p) => isFinite(parseFloat(p[1])))
+          .map((p) => [p[0], parseFloat(p[1])]);
+        const step = Math.max(1, Math.ceil(pts.length / 140));
+        const ds = pts.filter((_, i) => i % step === 0);
+        this._hist[key] = { points: ds, loading: false };
+        this._render();
+      })
+      .catch((err) => {
+        this._hist[key] = { error: String((err && err.message) || err), loading: false };
+        this._render();
+      });
+  }
+
+  _graph(key) {
+    const h = this._hist[key];
+    if (!h) return "";
+    if (h.loading) return `<div class="gstatus">Loading history\u2026</div>`;
+    if (h.error) return `<div class="gstatus">History unavailable: ${h.error}</div>`;
+    const pts = h.points;
+    if (!pts || !pts.length) return `<div class="gstatus">No history data yet</div>`;
+    const m = AQ_METRICS[key];
+    const W = 600, H = 110, PADT = 6;
+    const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
+    const x = (ts) => ((ts - t0) / Math.max(1, t1 - t0)) * W;
+    const y = (v) => H - PADT - (Math.max(0, Math.min(m.max, v)) / m.max) * (H - 2 * PADT);
+    let bands = "";
+    for (let i = m.zones.length - 1; i >= 0; i--) {
+      const from = m.zones[i][0];
+      const to = i < m.zones.length - 1 ? m.zones[i + 1][0] : m.max;
+      const yTop = y(to), yBot = y(from);
+      bands += `<rect x="0" y="${yTop.toFixed(1)}" width="${W}" height="${(yBot - yTop).toFixed(1)}" fill="${m.zones[i][1]}" opacity="0.13"></rect>`;
+    }
+    const line = pts.map((p) => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+    const label = `${new Date(t0).toLocaleDateString()} \u2192 ${new Date(t1).toLocaleDateString()}`;
+    return `<div class="gwrap">
+      <div class="glab">${label} \u00b7 last 7 days</div>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+        ${bands}
+        <polyline points="${line}" fill="none" stroke="var(--accent-color, #42a5f5)" stroke-width="2" vector-effect="non-scaling-stroke"></polyline>
+      </svg>
+    </div>`;
+  }
+
+  _metricBlock(key) {
     const m = AQ_METRICS[key];
     const value = this._state(key);
+    const open = !!this._open[key];
+    let valueHtml, trackHtml;
     if (value === null) {
-      return `<div class="row">
-        <ha-icon icon="${m.icon}"></ha-icon>
-        <span class="label">${m.label}</span>
-        <span class="val muted">\u2014</span>
-        <div class="track empty"></div>
+      valueHtml = `<span class="val muted">\u2014</span>`;
+      trackHtml = `<div class="track empty"></div>`;
+    } else {
+      const zi = this._zoneIndex(value, m);
+      const pct = Math.max(0, Math.min(100, (value / m.max) * 100));
+      const unit = m.unit ? ` <span class="unit">${m.unit}</span>` : "";
+      valueHtml = `<span class="val" style="color:${m.zones[zi][1]}">${value.toFixed(m.decimals)}${unit}
+        <span class="zone">${ZONE_NAMES[zi]}</span></span>`;
+      trackHtml = `<div class="track" style="background:${this._gradient(m)}">
+        <div class="marker" style="left:${pct}%"></div>
       </div>`;
     }
-    const zi = this._zoneIndex(value, m);
-    const pct = Math.max(0, Math.min(100, (value / m.max) * 100));
-    const unit = m.unit ? ` <span class="unit">${m.unit}</span>` : "";
-    return `<div class="row">
-      <ha-icon icon="${m.icon}"></ha-icon>
-      <span class="label">${m.label}</span>
-      <span class="val" style="color:${m.zones[zi][1]}">${value.toFixed(m.decimals)}${unit}
-        <span class="zone">${ZONE_NAMES[zi]}</span></span>
-      <div class="track" style="background:${this._gradient(m)}">
-        <div class="marker" style="left:${pct}%"></div>
+    return `<div class="metric">
+      <div class="row${open ? " open" : ""}" data-key="${key}">
+        <ha-icon icon="${m.icon}"></ha-icon>
+        <span class="label">${m.label}</span>
+        ${valueHtml}
+        ${trackHtml}
+        <ha-icon class="chev" icon="mdi-chevron-down"></ha-icon>
       </div>
+      ${open ? `<div class="graph">${this._graph(key)}</div>` : ""}
     </div>`;
   }
 
@@ -121,7 +192,7 @@ class AqRoomCard extends HTMLElement {
       }
     }
     const chipColors = [AQ_GREEN, AQ_YELLOW, AQ_RED];
-    const rows = this.config.metrics.map((k) => this._metricRow(k)).join("");
+    const blocks = this.config.metrics.map((k) => this._metricBlock(k)).join("");
     const el = this.shadowRoot.getElementById("body");
     if (!el) return;
     el.innerHTML = `
@@ -131,7 +202,15 @@ class AqRoomCard extends HTMLElement {
           ${ZONE_NAMES[worst]}
         </span>
       </div>
-      <div class="rows">${rows}</div>`;
+      <div class="rows">${blocks}</div>`;
+    el.querySelectorAll(".row").forEach((rowEl) => {
+      rowEl.addEventListener("click", () => {
+        const key = rowEl.getAttribute("data-key");
+        this._open[key] = !this._open[key];
+        if (this._open[key]) this._fetchHistory(key);
+        this._render();
+      });
+    });
   }
 
   connectedCallback() {
@@ -158,15 +237,19 @@ class AqRoomCard extends HTMLElement {
           padding: 3px 10px; border-radius: 999px;
           text-transform: uppercase; letter-spacing: 0.6px;
         }
+        .metric + .metric { border-top: 1px solid rgba(128,128,128,0.14); }
         .row {
           display: grid;
-          grid-template-columns: 20px 74px minmax(90px, auto) 1fr;
+          grid-template-columns: 20px 74px minmax(90px, auto) 1fr 20px;
           align-items: center;
           gap: 10px;
           padding: 7px 0;
+          cursor: pointer;
+          user-select: none;
         }
-        .row + .row { border-top: 1px solid rgba(128,128,128,0.14); }
         .row ha-icon { width: 20px; height: 20px; color: var(--secondary-text-color, #9aa0a8); }
+        .row .chev { transition: transform 0.15s ease; }
+        .row.open .chev { transform: rotate(180deg); }
         .label { font-size: 0.85rem; color: var(--secondary-text-color, #9aa0a8); }
         .val { font-size: 0.9rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
         .val .unit { font-size: 0.72rem; opacity: 0.75; }
@@ -189,6 +272,18 @@ class AqRoomCard extends HTMLElement {
           box-shadow: 0 0 0 1.5px rgba(0,0,0,0.55);
           transform: translateX(-50%);
         }
+        .graph {
+          padding: 6px 0 12px 30px;
+        }
+        .gwrap svg { width: 100%; height: 110px; display: block; border-radius: 6px; }
+        .glab {
+          font-size: 0.72rem; color: var(--secondary-text-color, #9aa0a8);
+          margin-bottom: 6px;
+        }
+        .gstatus {
+          font-size: 0.78rem; color: var(--secondary-text-color, #9aa0a8);
+          padding: 12px 0;
+        }
       `;
       this.shadowRoot.appendChild(style);
     }
@@ -207,8 +302,8 @@ if (!window.customCards.some((c) => c.type === "aq-room-card")) {
   window.customCards.push({
     type: "aq-room-card",
     name: "AQ Room Card",
-    description: "Room air quality overview with zoned bar gauges",
+    description: "Room air quality overview with zoned bar gauges and expandable 7-day history",
     preview: true,
-    documentationURL: "http://192.168.1.7:8130/",
+    documentationURL: "https://github.com/strid3r21/lovelace-aq-room-card",
   });
 }
