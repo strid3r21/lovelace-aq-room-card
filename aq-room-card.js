@@ -36,6 +36,30 @@ const AQ_METRICS = {
     label: "VOC Index", icon: "mdi:radiator", unit: "", suffix: "voc_index",
     max: 200, zones: [[0, AQ_GREEN], [50, AQ_YELLOW], [100, AQ_RED]], decimals: 0,
   },
+  nox_index: {
+    label: "NOx Index", icon: "mdi:cloud", unit: "", suffix: "nox_index",
+    max: 200, zones: [[0, AQ_GREEN], [50, AQ_YELLOW], [100, AQ_RED]], decimals: 0,
+  },
+  particles: {
+    label: "Particles", icon: "mdi:blur", unit: "#/0.1L", suffix: "pmc_0_3mm",
+    max: 500, zones: [[0, AQ_GREEN], [100, AQ_YELLOW], [250, AQ_RED]], decimals: 0,
+  },
+  temperature: {
+    label: "Temp", icon: "mdi:thermometer", unit: "°F", suffix: "temperature",
+    max: 100,
+    zones: [[0, AQ_RED], [60, AQ_YELLOW], [65, AQ_GREEN], [78, AQ_YELLOW], [85, AQ_RED]],
+    zone_labels: ["Cold", "Cool", "Good", "Warm", "Hot"],
+    zone_severity: [2, 1, 0, 1, 2],
+    decimals: 1,
+  },
+  humidity: {
+    label: "Humidity", icon: "mdi:water-percent", unit: "%", suffix: "humidity",
+    max: 100,
+    zones: [[0, AQ_RED], [20, AQ_YELLOW], [30, AQ_GREEN], [60, AQ_YELLOW], [75, AQ_RED]],
+    zone_labels: ["Very Dry", "Dry", "Good", "Humid", "Very Humid"],
+    zone_severity: [2, 1, 0, 1, 2],
+    decimals: 0,
+  },
 };
 
 const ZONE_NAMES = ["Good", "Moderate", "Poor"];
@@ -163,8 +187,9 @@ class AqRoomCard extends HTMLElement {
       const zi = this._zoneIndex(value, m);
       const pct = Math.max(0, Math.min(100, (value / m.max) * 100));
       const unit = m.unit ? ` <span class="unit">${m.unit}</span>` : "";
+      const labels = m.zone_labels || ZONE_NAMES;
       valueHtml = `<span class="val" style="color:${m.zones[zi][1]}">${value.toFixed(m.decimals)}${unit}
-        <span class="zone">${ZONE_NAMES[zi]}</span></span>`;
+        <span class="zone">${labels[zi]}</span></span>`;
       trackHtml = `<div class="track" style="background:${this._gradient(m)}">
         <div class="marker" style="left:${pct}%"></div>
       </div>`;
@@ -187,8 +212,10 @@ class AqRoomCard extends HTMLElement {
     for (const key of this.config.metrics) {
       const v = this._state(key);
       if (v !== null) {
-        const zi = this._zoneIndex(v, AQ_METRICS[key]);
-        if (zi > worst) worst = zi;
+        const m = AQ_METRICS[key];
+        const zi = this._zoneIndex(v, m);
+        const sev = m.zone_severity ? m.zone_severity[zi] : zi;
+        if (sev > worst) worst = sev;
       }
     }
     const chipColors = [AQ_GREEN, AQ_YELLOW, AQ_RED];
